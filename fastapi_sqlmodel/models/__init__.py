@@ -1,0 +1,1 @@
+from fastapi_sqlmodel.models.example import Song  # noqa

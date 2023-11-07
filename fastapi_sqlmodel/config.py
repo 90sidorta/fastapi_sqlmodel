@@ -1,6 +1,7 @@
 import os
+from pathlib import Path
 
-from pydantic import BaseSettings
+from pydantic import BaseSettings, DirectoryPath, Field
 
 
 class Settings(BaseSettings):
@@ -19,3 +20,4 @@ class Settings(BaseSettings):
     DATABASE_URL_TEST_SYNC: str = (
         f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_SERVER}:{DP_PORT}/{DB_TEST_NAME}"
     )
+    ROOT_DIR: DirectoryPath = Field(Path(__file__).parent.resolve(), const=True)

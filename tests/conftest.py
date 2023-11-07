@@ -1,83 +1,69 @@
+import asyncio
 import os
-from typing import AsyncGenerator
-from uuid import UUID
+import json
+from typing import Generator
 
 import pytest
-from alembic import command
-from alembic.config import Config
+import pytest_asyncio
 from httpx import AsyncClient
-from sqlmodel import create_engine, SQLModel
+from sqlmodel import SQLModel
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy_utils import create_database, database_exists
+from sqlalchemy.orm import sessionmaker
 
 from fastapi_sqlmodel.config import Settings
-from fastapi_sqlmodel.db.db import get_session as get_async_session
 from main import app
 
 settings = Settings()
 db_url_test_sync = settings.DATABASE_URL_TEST_SYNC
 db_url_test = settings.DATABASE_URL_TEST
+root = settings.ROOT_DIR
 
 
-@pytest.fixture(
-    params=[
-        pytest.param(("asyncio", {"use_uvloop": True}), id="asyncio+uvloop"),
-    ]
-)
-def anyio_backend(request):
-    return request.param
+@pytest.fixture(scope="session")
+def event_loop(request) -> Generator:  # noqa: indirect usage
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def init_db():
-    # create sync engine for alembic
-    engine_sync = create_engine(db_url_test_sync)
-    if not database_exists(engine_sync.url):
-        create_database(engine_sync.url)
-
-    # # run migrations on test db
-    # alembic_config_file = os.path.join(global_settings.ROOT_DIR, "..", "alembic.ini")
-    # alembic_cfg = Config(alembic_config_file)
-    # alembic_cfg.set_main_option("sqlalchemy.url", global_settings.POSTGRES_TEST_URL)
-    # command.downgrade(alembic_cfg, "base")
-    # command.upgrade(alembic_cfg, "head")
-
-    # session = Session(engine_sync)
-
-    # # Add owner user
-    # user = UserFactory(id=OWNER_ID, email=OWNER_EMAIL)
-    # session.add(user)
-    # session.commit()
-    # at = AccessToken(token=OWNER_TOKEN, user_id=OWNER_ID)
-    # session.add(at)
-    # session.commit()
-
-
-@pytest.fixture
-def async_session_maker() -> sessionmaker:
-    engine_async = create_async_engine(db_url_test)
-    return sessionmaker(engine_async, class_=AsyncSession, expire_on_commit=False)
-
-
-@pytest.fixture
-async def async_session(async_session_maker) -> AsyncGenerator[AsyncSession, None]:
-    async with async_session_maker() as session:
-        yield session
-
-
-@pytest.fixture
-async def async_client(async_session) -> AsyncClient:
+@pytest_asyncio.fixture
+async def async_client():
     async with AsyncClient(
-        app=app,
-        base_url="http://testserver",
-    ) as async_client:
-        app.dependency_overrides[get_async_session] = lambda: async_session
+            app=app,
+            base_url="http://testserver",
+    ) as client:
+        yield client
 
-        yield async_client
 
-@pytest.fixture
-def db_session():
-    engine_sync = create_engine(db_url_test_sync)
-    yield Session(engine_sync)
+@pytest_asyncio.fixture(scope="function")
+async def async_session() -> AsyncSession:
+    async_engine = create_async_engine(db_url_test, echo=True, future=True)
+    session = sessionmaker(
+        async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
+    async with session() as s:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+
+        yield s
+
+    async with async_engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.drop_all)
+
+    await async_engine.dispose()
+
+
+@pytest.fixture(scope="function")
+def test_data() -> dict:
+    path = os.getenv('PYTEST_CURRENT_TEST')
+    path = os.path.join(*os.path.split(path)[:-1], "data", "data.json")
+
+    if not os.path.exists(path):
+        path = os.path.join("data", "data.json")
+
+    with open(path, "r") as file:
+        data = json.loads(file.read())
+
+    return data
